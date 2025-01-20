@@ -18,5 +18,12 @@
 		"svelte-check": "^4.0.0",
 		"typescript": "^5.0.0",
 		"vite": "^5.4.11"
+	},
+	"dependencies": {
+		"@threlte/core": "^6.1.1",
+		"@threlte/extras": "^6.0.0",
+		"@types/three": "^0.172.0",
+		"three": "^0.172.0",
+		"three-stdlib": "^2.35.12"
 	}
 }
