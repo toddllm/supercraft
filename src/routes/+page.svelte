@@ -35,14 +35,20 @@
     let keys: { [key: string]: boolean } = {};
     $: console.log('Keys state changed:', keys);
   
-    // Player state
+    // Player state with higher initial position
     const player = {
-      position: new THREE.Vector3(0, 32, 0),
-      speed: 5.0,
-      gravity: -20.0,
-      jumpForce: 15.0,
-      verticalVelocity: 0,
-      isGrounded: false
+        position: new THREE.Vector3(0, 10, 0),
+        spawnPoint: new THREE.Vector3(0, 10, 0),
+        velocity: new THREE.Vector3(),
+        verticalVelocity: 0,
+        speed: 5,
+        health: 5,
+        isGrounded: false,
+        isDead: false,
+        lastDamageTime: 0,
+        lastRespawnTime: 0,
+        damageCooldown: 1000, // 1 second cooldown for taking damage
+        respawnCooldown: 3000 // 3 seconds cooldown for respawning
     };
   
     let isControlsLocked = false;
@@ -172,12 +178,21 @@
       lastChunkZ = currentChunkZ;
     }
   
+    // Define block color type
+    type BlockColor = {
+        top: string;
+        side: string;
+        bottom: string;
+    };
+
     function addBlock(x: number, y: number, z: number, type: number) {
       if (type === 0) return;
       const key = `${x}|${y}|${z}`;
       if (world.has(key)) return;
   
-      const colors = blockColors[type];
+      const colors = blockColors[type] as BlockColor;
+      if (!colors) return;
+
       const materials = [
         getMaterial(colors.side),
         getMaterial(colors.side),
@@ -257,296 +272,727 @@
         return collision;
     }
   
-    let lastTime = performance.now(); // Add this at the top level
+    let lastTime = performance.now();
+    let lastEnemySpawn = 0;
   
     // Add these constants at the top level
     const MOVEMENT_SPEED = 5.0;  // Make speed more noticeable
   
-    onMount(() => {
-      console.log('🚀 Mounting game...');
-
-      console.log('Starting world generation');
-      console.time('Initial world generation');
-  
-      scene = new THREE.Scene();
-      console.log('Scene created');
-      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-      console.log('Camera created');
-      
-      renderer = new THREE.WebGLRenderer({ 
-        canvas,
-        antialias: true,
-        powerPreference: "high-performance"
-      });
-      console.log('Renderer created');
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.setPixelRatio(window.devicePixelRatio);
-  
-      controls = new PointerLockControls(camera, renderer.domElement);
-      console.log('Controls created');
-      scene.add(controls.getObject());
-  
-      // Add controls lock change listener
-      controls.addEventListener('lock', () => {
-        console.log('Controls locked');
-        isControlsLocked = true;
-      });
-      
-      controls.addEventListener('unlock', () => {
-        console.log('Controls unlocked');
-        isControlsLocked = false;
-      });
-  
-      // Generate only the immediate chunks around spawn
-      const spawnChunkX = Math.floor(player.position.x / CHUNK_SIZE);
-      const spawnChunkZ = Math.floor(player.position.z / CHUNK_SIZE);
-      
-      console.log(`Generating spawn area around chunk (${spawnChunkX}, ${spawnChunkZ})`);
-      
-      // Generate the spawn chunk and immediate neighbors
-      for (let x = -1; x <= 1; x++) {
-          for (let z = -1; z <= 1; z++) {
-              generateChunk(spawnChunkX + x, spawnChunkZ + z);
-          }
-      }
-  
-      console.timeEnd('Initial world generation');
-      console.log(`Initial chunks generated: ${activeChunks.size}`);
-  
-      // Initial world generation
-      updateChunks();
-  
-      // Lighting
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
-      scene.add(ambientLight);
-  
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      directionalLight.position.set(100, 100, 100);
-      scene.add(directionalLight);
-  
-      scene.background = new THREE.Color(0x87CEEB);
-      camera.position.set(player.position.x, player.position.y + 1.6, player.position.z);
-  
-      // Key handlers
-      function handleKeyDown(event: KeyboardEvent) {
-        console.log('Key down:', {
-          code: event.code,
-          isGrounded: player.isGrounded,
-          verticalVelocity: player.verticalVelocity
-        });
-        event.preventDefault();
-        keys[event.code] = true;
-      }
-
-      function handleKeyUp(event: KeyboardEvent) {
-        console.log('Key up:', {
-          code: event.code,
-          isGrounded: player.isGrounded,
-          verticalVelocity: player.verticalVelocity
-        });
-        event.preventDefault();
-        keys[event.code] = false;
-      }
-
-      // Mouse handler
-      function handleMouseDown() {
-        console.log('Mouse clicked, requesting pointer lock');
-        controls.lock();
-      }
-
-      // Add event listeners
-      console.log('Adding event listeners...');
-      window.addEventListener('keydown', handleKeyDown);
-      window.addEventListener('keyup', handleKeyUp);
-      canvas.addEventListener('click', handleMouseDown);
-  
-      const animate = () => {
-        requestAnimationFrame(animate);
-        
-        if (isControlsLocked) {
-            const now = performance.now();
-            const delta = Math.min((now - lastTime) / 1000, 0.1);
-            lastTime = now;
-
-            // Test movement directly
-            if (keys['KeyW']) {
-                player.position.z -= player.speed * delta;
-                console.log('W pressed - Moving forward');
-            }
-            if (keys['KeyS']) {
-                player.position.z += player.speed * delta;
-                console.log('S pressed - Moving backward');
-            }
-            if (keys['KeyA']) {
-                player.position.x -= player.speed * delta;
-                console.log('A pressed - Moving left');
-            }
-            if (keys['KeyD']) {
-                player.position.x += player.speed * delta;
-                console.log('D pressed - Moving right');
-            }
-
-            // Handle jumping - with debug logs
-            if (keys['Space'] && player.isGrounded) {
-                console.log('Jump initiated:', {
-                    beforeVelocity: player.verticalVelocity,
-                    beforeY: player.position.y
-                });
-                
-                player.verticalVelocity = player.jumpForce;
-                player.isGrounded = false;
-                
-                console.log('Jump started:', {
-                    afterVelocity: player.verticalVelocity,
-                    jumpForce: player.jumpForce
-                });
-            }
-
-            // Apply gravity with debug
-            const oldVelocity = player.verticalVelocity;
-            player.verticalVelocity += player.gravity * delta;
-            
-            console.log('Vertical movement:', {
-                oldVelocity: oldVelocity.toFixed(2),
-                newVelocity: player.verticalVelocity.toFixed(2),
-                gravityEffect: (player.gravity * delta).toFixed(2),
-                delta: delta.toFixed(3)
-            });
-
-            // Calculate new position
-            const oldY = player.position.y;
-            const newY = oldY + (player.verticalVelocity * delta);
-            
-            // Get block below player
-            const blockBelow = getBlock(
-                Math.floor(player.position.x),
-                Math.floor(newY - 1.8),
-                Math.floor(player.position.z)
-            );
-
-            // Get block at player's head level (for ceiling collisions)
-            const blockAbove = getBlock(
-                Math.floor(player.position.x),
-                Math.floor(newY + 0.2), // Check slightly above head
-                Math.floor(player.position.z)
-            );
-
-            console.log('Position update:', {
-                oldY: oldY.toFixed(2),
-                newY: newY.toFixed(2),
-                blockBelow: !!blockBelow,
-                blockAbove: !!blockAbove,
-                verticalVelocity: player.verticalVelocity.toFixed(2),
-                isGrounded: player.isGrounded
-            });
-
-            if (blockBelow && player.verticalVelocity < 0) {
-                // Hit ground
-                player.verticalVelocity = 0;
-                player.isGrounded = true;
-                player.position.y = Math.floor(newY - 1.8) + 2.8; // Place player on top of block
-                console.log('Landed on ground');
-            } else if (blockAbove && player.verticalVelocity > 0) {
-                // Hit ceiling
-                player.verticalVelocity = 0;
-                player.position.y = oldY;
-                console.log('Hit ceiling');
-            } else {
-                // In air - update position
-                player.position.y = newY;
-                player.isGrounded = false;
-            }
-
-            // Update camera position
-            controls.getObject().position.copy(player.position);
-            controls.getObject().position.y += 1.6; // Eye height
-
-            // Update debug overlay with more detailed info
-            document.getElementById('debug-overlay').innerHTML = `
-                Position: (${player.position.x.toFixed(1)}, ${player.position.y.toFixed(1)}, ${player.position.z.toFixed(1)})<br>
-                Velocity: ${player.verticalVelocity.toFixed(1)}<br>
-                Grounded: ${player.isGrounded}<br>
-                Block Below: ${!!blockBelow}<br>
-                Block Above: ${!!blockAbove}<br>
-                Delta: ${delta.toFixed(3)}<br>
-                Space Pressed: ${keys['Space']}<br>
-                Jump Force: ${player.jumpForce}
-            `;
+    function respawnPlayer() {
+        const currentTime = performance.now();
+        if (currentTime - player.lastRespawnTime < player.respawnCooldown) {
+            console.log('Respawn on cooldown');
+            return;
         }
 
-        updateChunks();
+        console.log('Respawning player');
+        player.position.copy(player.spawnPoint);
+        player.verticalVelocity = 0;
+        player.isGrounded = false;
+        player.health = 5;
+        player.isDead = false;
+        player.lastRespawnTime = currentTime;
+        controls.getObject().position.copy(player.spawnPoint);
+        controls.getObject().position.y += 1.6;
+    }
+  
+    function damagePlayer(amount: number) {
+        const currentTime = performance.now();
+        if (currentTime - player.lastDamageTime < player.damageCooldown) {
+            return; // Skip damage if on cooldown
+        }
+
+        player.health = Math.max(0, player.health - amount);
+        player.lastDamageTime = currentTime;
+        console.log(`Player took ${amount} damage. Health: ${player.health}`);
+        
+        if (player.health <= 0 && !player.isDead) {
+            player.isDead = true;
+            console.log('Player died');
+            respawnPlayer();
+        }
+    }
+  
+    // Convert enum to const object
+    const EnemyType = {
+        ZOMBIE: 'Zombie',
+        GHOST: 'Ghost',
+        EMOLVER: 'Emolver',
+        REVOLVER: 'Revolver',
+        TYRESE: 'Tyrese',
+        SKELETON: 'Skeleton',
+        SWORD_SKELETON: 'Sword Skeleton',
+        LAVA_GOLEM: 'Lava Golem',
+        ICE_GOLEM: 'Ice Golem',
+        IVORY_GOLEM: 'Ivory Golem',
+        ELDER: 'Elder',
+        WATER_GUARDIAN: 'Water Guardian',
+        LITHER: 'Lither',
+        ENDER_CRYSTAL: 'Ender Crystal',
+        ENDER_DRAGON: 'Ender Dragon',
+        ENDERNITE: 'Endernite',
+        OLIVER: 'Oliver',
+        PUMPKIN_SLIME: 'Pumpkin Slime',
+        SLIME: 'Slime',
+        BLAZE_CUBE: 'Blaze Cube',
+        MAGMA_BLOCK: 'Magma Block',
+        VAMPIRE: 'Vampire',
+        MUMMY: 'Mummy',
+        GOBLIN: 'Goblin',
+        STLICKER: 'Stlicker',
+        BABY_DRAGON: 'Baby Dragon',
+        BABY_ZOMBIE: 'Baby Zombie',
+        DEMIN: 'Demin',
+        LAVA_BULLY: 'Lava Bully',
+        LIGHTNING_ZOMBIE: 'Lightning Zombie',
+        CREEPER: 'Creeper',
+        TROLL: 'Troll',
+        DR_NICKEL: 'Dr Nickel'
+    } as const;
+
+    type EnemyTypeKey = keyof typeof EnemyType;
+  
+    // Base Enemy class
+    class Enemy {
+        position: THREE.Vector3;
+        mesh: THREE.Group;
+        health: number;
+        damage: number;
+        speed: number;
+        type: string;
+        isAlive: boolean = true;
+
+        constructor(type: string, position: THREE.Vector3) {
+            this.type = type;
+            this.position = position;
+            this.health = this.getInitialHealth(type);
+            this.damage = this.getInitialDamage(type);
+            this.speed = this.getInitialSpeed(type);
+            this.mesh = this.createEnemyMesh();
+            this.mesh.position.copy(position);
+        }
+
+        getInitialHealth(type: string): number {
+            switch(type) {
+                case EnemyType.DR_NICKEL: return 1000;
+                case EnemyType.ENDER_DRAGON: return 500;
+                case EnemyType.LAVA_GOLEM: return 200;
+                default: return 100;
+            }
+        }
+
+        getInitialDamage(type: string): number {
+            switch(type) {
+                case EnemyType.DR_NICKEL: return 50;
+                case EnemyType.ENDER_DRAGON: return 30;
+                case EnemyType.LAVA_GOLEM: return 20;
+                default: return 10;
+            }
+        }
+
+        getInitialSpeed(type: string): number {
+            switch(type) {
+                case EnemyType.GHOST: return 8;
+                case EnemyType.BABY_ZOMBIE: return 7;
+                case EnemyType.ZOMBIE: return 2; // Slower zombie speed
+                default: return 4;
+            }
+        }
+
+        createEnemyMesh(): THREE.Group {
+            const group = new THREE.Group();
+
+            // Body
+            const bodyGeometry = new THREE.BoxGeometry(1, 2, 1);
+            const bodyMaterial = this.getEnemyMaterial();
+            const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+            group.add(body);
+
+            // Head
+            const headGeometry = new THREE.BoxGeometry(0.8, 0.8, 0.8);
+            const head = new THREE.Mesh(headGeometry, bodyMaterial);
+            head.position.y = 1.4;
+            group.add(head);
+
+            // Add special features based on type
+            this.addSpecialFeatures(group);
+
+            return group;
+        }
+
+        getEnemyMaterial(): THREE.Material {
+            switch(this.type) {
+                case EnemyType.GHOST:
+                    return new THREE.MeshBasicMaterial({ 
+                        color: 0xffffff,
+                        transparent: true,
+                        opacity: 0.5
+                    });
+                case EnemyType.LAVA_GOLEM:
+                    return new THREE.MeshPhongMaterial({ 
+                        color: 0xff4400,
+                        emissive: 0xff0000
+                    });
+                case EnemyType.ICE_GOLEM:
+                    return new THREE.MeshPhongMaterial({ 
+                        color: 0x88ffff,
+                        transparent: true,
+                        opacity: 0.8
+                    });
+                case EnemyType.DR_NICKEL:
+                    return new THREE.MeshPhongMaterial({ 
+                        color: 0x000000,
+                        emissive: 0x440044
+                    });
+                default:
+                    return new THREE.MeshPhongMaterial({ color: 0xff0000 });
+            }
+        }
+
+        addSpecialFeatures(group: THREE.Group) {
+            switch(this.type) {
+                case EnemyType.SKELETON:
+                case EnemyType.SWORD_SKELETON:
+                    this.addWeapon(group);
+                    break;
+                case EnemyType.ENDER_DRAGON:
+                    this.addWings(group);
+                    break;
+                case EnemyType.DR_NICKEL:
+                    this.addBossFeatures(group);
+                    break;
+            }
+        }
+
+        addWeapon(group: THREE.Group) {
+            const weaponGeometry = new THREE.BoxGeometry(0.2, 1.5, 0.2);
+            const weaponMaterial = new THREE.MeshPhongMaterial({ color: 0x888888 });
+            const weapon = new THREE.Mesh(weaponGeometry, weaponMaterial);
+            weapon.position.set(0.8, 0, 0);
+            weapon.rotation.z = Math.PI / 4;
+            group.add(weapon);
+        }
+
+        addWings(group: THREE.Group) {
+            const wingGeometry = new THREE.PlaneGeometry(2, 1);
+            const wingMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x000000,
+                side: THREE.DoubleSide
+            });
+            
+            const leftWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            leftWing.position.set(-1.5, 0.5, 0);
+            leftWing.rotation.y = Math.PI / 4;
+            
+            const rightWing = new THREE.Mesh(wingGeometry, wingMaterial);
+            rightWing.position.set(1.5, 0.5, 0);
+            rightWing.rotation.y = -Math.PI / 4;
+            
+            group.add(leftWing, rightWing);
+        }
+
+        addBossFeatures(group: THREE.Group) {
+            // Add glowing eyes
+            const eyeGeometry = new THREE.SphereGeometry(0.1);
+            const eyeMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff0000,
+                emissive: 0xff0000
+            });
+            
+            const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+            const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
+            
+            leftEye.position.set(-0.2, 1.4, 0.4);
+            rightEye.position.set(0.2, 1.4, 0.4);
+            
+            group.add(leftEye, rightEye);
+
+            // Add floating crystals
+            for (let i = 0; i < 3; i++) {
+                const crystal = new THREE.Mesh(
+                    new THREE.OctahedronGeometry(0.3),
+                    new THREE.MeshPhongMaterial({ 
+                        color: 0x8800ff,
+                        emissive: 0x440088
+                    })
+                );
+                
+                const angle = (i / 3) * Math.PI * 2;
+                crystal.position.set(
+                    Math.cos(angle) * 2,
+                    2,
+                    Math.sin(angle) * 2
+                );
+                
+                group.add(crystal);
+            }
+        }
+
+        update(delta: number) {
+            if (!this.isAlive) return;
+
+            // Move towards player
+            const directionToPlayer = new THREE.Vector3()
+                .subVectors(player.position, this.position)
+                .normalize();
+
+            this.position.add(
+                directionToPlayer.multiplyScalar(this.speed * delta)
+            );
+            
+            this.mesh.position.copy(this.position);
+
+            // Animate based on type
+            this.animate(delta);
+        }
+
+        animate(delta: number) {
+            switch(this.type) {
+                case EnemyType.GHOST:
+                    this.mesh.position.y = this.position.y + Math.sin(performance.now() * 0.002) * 0.5;
+                    break;
+                case EnemyType.ENDER_DRAGON:
+                    this.mesh.rotation.y += delta;
+                    break;
+                case EnemyType.DR_NICKEL:
+                    this.animateBoss(delta);
+                    break;
+            }
+        }
+
+        animateBoss(delta: number) {
+            // Rotate floating crystals
+            this.mesh.children.forEach((child, i) => {
+                if (i > 2) { // Crystal indices
+                    child.rotation.y += delta * 2;
+                    child.position.y = 2 + Math.sin(performance.now() * 0.002 + i) * 0.3;
+                }
+            });
+        }
+
+        takeDamage(amount: number) {
+            this.health -= amount;
+            if (this.health <= 0) {
+                this.die();
+            }
+        }
+
+        die() {
+            this.isAlive = false;
+            scene.remove(this.mesh);
+        }
+    }
+
+    // Initialize enemies array
+    let enemies: Enemy[] = [];
+
+    function spawnEnemy() {
+        const spawnDistance = 30;
+        const angle = Math.random() * Math.PI * 2;
+        const position = new THREE.Vector3(
+            Math.cos(angle) * spawnDistance,
+            0,
+            Math.sin(angle) * spawnDistance
+        );
+
+        const enemyTypes = Object.values(EnemyType);
+        const randomType = enemyTypes[Math.floor(Math.random() * (enemyTypes.length - 1))]; // Exclude DR_NICKEL
+        
+        const enemy = new Enemy(randomType, position);
+        enemies.push(enemy);
+        scene.add(enemy.mesh);
+    }
+
+    function initializeGame() {
+        console.log('Initializing game...');
+        
+        // Scene setup
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+
+        // Camera setup
+        camera = new THREE.PerspectiveCamera(
+            75,
+            window.innerWidth / window.innerHeight,
+            0.1,
+            1000
+        );
+        camera.position.copy(player.position);
+        camera.position.y += 1.6; // Eye height
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(100, 100, 50);
+        scene.add(directionalLight);
+
+        // Ground
+        const groundGeometry = new THREE.PlaneGeometry(1000, 1000);
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x355E3B,
+            roughness: 0.8,
+        });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = 0;
+        scene.add(ground);
+
+        // Initial enemies
+        spawnInitialEnemies();
+
+        console.log('Game initialized');
+    }
+
+    function spawnInitialEnemies() {
+        for (let i = 0; i < 5; i++) {
+            spawnEnemy();
+        }
+    }
+
+    let isPaused = false;
+    let showPauseMenu = false;
+
+    // Add pause menu handler
+    function handlePause() {
+        if (isControlsLocked) {
+            document.exitPointerLock();
+            // State will be updated by pointerlockchange event
+        } else {
+            canvas.requestPointerLock();
+            // State will be updated by pointerlockchange event
+        }
+    }
+
+    // Update onMount with pause handlers
+    onMount(() => {
+        console.log('Mounting game...');
+        
+        // Renderer setup
+        renderer = new THREE.WebGLRenderer({ 
+            canvas,
+            antialias: true
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        // Initialize game
+        initializeGame();
+
+        // Controls setup
+        controls = new PointerLockControls(camera, canvas);
+        
+        // Auto-lock controls on click
+        canvas.addEventListener('mousedown', (e) => {
+            // Only request pointer lock if clicking directly on canvas
+            if (!isControlsLocked && e.target === canvas && !showPauseMenu) {
+                e.preventDefault();
+                canvas.requestPointerLock();
+            }
+        });
+
+        // Handle movement and attacks
+        window.addEventListener('keydown', (e) => {
+            keys[e.code] = true;
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.code] = false;
+        });
+
+        // Handle mouse clicks for attacking
+        window.addEventListener('click', (e) => {
+            if (isControlsLocked && !isPaused) {
+                attackEnemies();
+            }
+        });
+
+        // Handle resize
+        window.addEventListener('resize', onWindowResize);
+
+        // Handle ESC key
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Escape') {
+                handlePause();
+            }
+            keys[e.code] = true;
+        });
+
+        // Handle pointer lock changes
+        document.addEventListener('pointerlockchange', () => {
+            isControlsLocked = document.pointerLockElement === canvas;
+            if (isControlsLocked) {
+                isPaused = false;
+                showPauseMenu = false;
+            } else {
+                isPaused = true;
+                showPauseMenu = true;
+            }
+        });
+
+        // Start animation loop
+        animate();
+
+        return () => {
+            window.removeEventListener('resize', onWindowResize);
+            window.removeEventListener('keydown', (e) => keys[e.code] = true);
+            window.removeEventListener('keyup', (e) => keys[e.code] = false);
+            document.removeEventListener('pointerlockchange', () => {});
+        };
+    });
+
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        const time = performance.now();
+        const delta = Math.min((time - lastTime) / 1000, 0.1);
+        lastTime = time;
+
+        // Only update game if not paused and controls are locked
+        if (!isPaused && isControlsLocked) {
+            // Movement
+            const speed = player.speed;
+            const moveDirection = new THREE.Vector3();
+
+            if (keys['KeyW']) moveDirection.z -= 1;
+            if (keys['KeyS']) moveDirection.z += 1;
+            if (keys['KeyA']) moveDirection.x -= 1;
+            if (keys['KeyD']) moveDirection.x += 1;
+
+            if (moveDirection.length() > 0) {
+                moveDirection.normalize();
+                moveDirection.multiplyScalar(speed * delta);
+                
+                // Apply movement relative to camera direction
+                const cameraDirection = new THREE.Vector3();
+                camera.getWorldDirection(cameraDirection);
+                const angle = Math.atan2(cameraDirection.x, cameraDirection.z);
+                
+                moveDirection.applyAxisAngle(new THREE.Vector3(0, 1, 0), angle);
+                player.position.add(moveDirection);
+                
+                // Update camera position
+                controls.getObject().position.copy(player.position);
+                controls.getObject().position.y += 1.6; // Eye height
+            }
+
+            // Update enemies and check for collisions
+            enemies = enemies.filter(enemy => enemy.isAlive);
+            enemies.forEach(enemy => {
+                enemy.update(delta);
+                
+                // Check for collision with player
+                const distanceToPlayer = enemy.position.distanceTo(player.position);
+                if (distanceToPlayer < 2) { // If enemy is within 2 units of player
+                    damagePlayer(enemy.damage * delta); // Scale damage by time
+                }
+            });
+
+            // Spawn new enemies
+            if (time - lastEnemySpawn > 5000) {
+                spawnEnemy();
+                lastEnemySpawn = time;
+            }
+        }
+
         renderer.render(scene, camera);
-      };
-  
-      console.log('Starting animation loop...');
-      animate();
-  
-      // Set initial position high enough to see terrain
-      player.position.set(0, 32, 0);
-      camera.position.copy(player.position);
-      camera.position.y += 1.6; // Eye height
-      controls.getObject().position.copy(camera.position);
+    }
 
-      console.log('Initial positions set:', {
-          player: player.position.clone(),
-          camera: camera.position.clone(),
-          controls: controls.getObject().position.clone()
-      });
-
-      const onResize = () => {
+    function onWindowResize() {
         camera.aspect = window.innerWidth / window.innerHeight;
         camera.updateProjectionMatrix();
         renderer.setSize(window.innerWidth, window.innerHeight);
-      };
-  
-      window.addEventListener('resize', onResize);
-      return () => {
-        console.log('Cleaning up...');
-        window.removeEventListener('resize', onResize);
-        canvas.removeEventListener('click', handleMouseDown);
-        window.removeEventListener('keydown', handleKeyDown);
-        window.removeEventListener('keyup', handleKeyUp);
-      };
-    });
-  
-    onDestroy(() => {
-      world.forEach(block => scene.remove(block));
-      geometryPool.dispose();
-      materialCache.forEach(material => material.dispose());
-      renderer?.dispose();
-    });
-  </script>
-  
-  <style>
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
     }
 
+    // Attack function
+    function attackEnemies() {
+        // Get direction player is facing
+        const cameraDirection = new THREE.Vector3();
+        camera.getWorldDirection(cameraDirection);
+
+        // Create raycaster for attack detection
+        const attackRaycaster = new THREE.Raycaster(
+            player.position,
+            cameraDirection,
+            0,
+            5 // Attack range of 5 units
+        );
+
+        // Get enemy meshes
+        const enemyMeshes = enemies.map(enemy => enemy.mesh);
+        
+        // Check for hits
+        const hits = attackRaycaster.intersectObjects(enemyMeshes, true);
+        
+        if (hits.length > 0) {
+            // Find the enemy that was hit
+            const hitMesh = hits[0].object;
+            const hitEnemy = enemies.find(enemy => 
+                enemy.mesh === hitMesh || enemy.mesh.children.includes(hitMesh)
+            );
+            
+            if (hitEnemy) {
+                hitEnemy.takeDamage(25); // Player does 25 damage per hit
+                
+                // Visual feedback - flash enemy red
+                const bodyMesh = hitEnemy.mesh.children[0] as THREE.Mesh;
+                const materials = bodyMesh.material as THREE.Material | THREE.Material[];
+                
+                // Store original colors
+                const originalColors = Array.isArray(materials) 
+                    ? materials.map(m => (m as THREE.MeshPhongMaterial).color.clone())
+                    : [(materials as THREE.MeshPhongMaterial).color.clone()];
+                
+                // Flash red
+                if (Array.isArray(materials)) {
+                    materials.forEach(m => (m as THREE.MeshPhongMaterial).color.setHex(0xff0000));
+                } else {
+                    (materials as THREE.MeshPhongMaterial).color.setHex(0xff0000);
+                }
+                
+                // Reset color after 100ms
+                setTimeout(() => {
+                    if (Array.isArray(materials)) {
+                        materials.forEach((m, i) => (m as THREE.MeshPhongMaterial).color.copy(originalColors[i]));
+                    } else {
+                        (materials as THREE.MeshPhongMaterial).color.copy(originalColors[0]);
+                    }
+                }, 100);
+            }
+        }
+    }
+
+    // Resume game function
+    function resumeGame() {
+        // Request pointer lock on next tick to avoid event conflicts
+        setTimeout(() => {
+            canvas.requestPointerLock().catch(error => {
+                console.error('Failed to request pointer lock:', error);
+            });
+        }, 0);
+    }
+</script>
+  
+<style>
+    :global(body) {
+        margin: 0;
+        overflow: hidden;
+    }
+    :global(#svelte) {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+    }
     canvas {
         width: 100%;
         height: 100%;
-        position: fixed;
-        top: 0;
-        left: 0;
+        cursor: pointer;
+        display: block;
     }
-  </style>
+    .overlay {
+        position: fixed;
+        color: white;
+        font-family: monospace;
+        padding: 10px;
+        background: rgba(0,0,0,0.5);
+        pointer-events: none;
+        z-index: 2;
+    }
+    #debug-overlay {
+        top: 10px;
+        left: 10px;
+    }
+    #health-overlay {
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 24px;
+    }
+    .pause-menu {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(0, 0, 0, 0.8);
+        padding: 20px;
+        border-radius: 10px;
+        color: white;
+        text-align: center;
+        font-family: Arial, sans-serif;
+        min-width: 200px;
+        z-index: 999;
+        pointer-events: all;
+        user-select: none;
+        isolation: isolate;
+        touch-action: none;
+    }
+
+    .pause-menu button {
+        background: #4CAF50;
+        border: none;
+        color: white;
+        padding: 10px 20px;
+        margin: 5px;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background 0.3s;
+        width: 100%;
+    }
+
+    .pause-menu button:hover {
+        background: #45a049;
+    }
+
+    .pause-menu h2 {
+        margin-top: 0;
+        margin-bottom: 20px;
+    }
+
+    .controls-list {
+        text-align: left;
+        margin: 15px 0;
+        padding: 10px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 5px;
+    }
+
+    .controls-list p {
+        margin: 5px 0;
+    }
+</style>
   
-  <canvas bind:this={canvas}></canvas>
-  
-  {#if typeof document !== 'undefined'}
-    <div class="hotbar">
-      {#each [1, 2, 3, 4, 5] as i}
-        <div class="slot {i === currentBlockType ? 'selected' : ''}" 
-             style="background-color: {blockColors[i].side}">
+<canvas bind:this={canvas}></canvas>
+
+<div id="debug-overlay" class="overlay">
+    Health: {'❤️'.repeat(player.health)}
+</div>
+
+<div id="health-overlay" class="overlay">
+    {'❤️'.repeat(player.health)}
+</div>
+
+<!-- Pause Menu -->
+{#if showPauseMenu}
+    <div class="pause-menu">
+        <h2>Game Paused</h2>
+        
+        <div class="controls-list">
+            <p>WASD - Move</p>
+            <p>Mouse - Look around</p>
+            <p>ESC - Pause/Resume</p>
+            <p>Click - Attack</p>
         </div>
-      {/each}
+        
+        <div on:mousedown|stopPropagation on:click|stopPropagation>
+            <button on:click={resumeGame}>
+                Resume Game
+            </button>
+            
+            <button on:click={() => window.location.reload()}>
+                Restart Game
+            </button>
+        </div>
     </div>
-  {/if}
-  
-  <!-- Debug overlay -->
-  <div id="debug-overlay" 
-    style="position: fixed; top: 10px; left: 10px; color: white; font-family: monospace; background: rgba(0,0,0,0.5); padding: 10px; z-index: 1000;">
-    Loading...
-  </div>
+{/if}
