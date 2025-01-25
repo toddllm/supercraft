@@ -6,6 +6,13 @@
   
     let canvas: HTMLCanvasElement;
     const world = new Map<string, THREE.Mesh>();
+    
+    // Day/night cycle
+    let timeOfDay = 0; // 0-1 where 0=dawn, 0.5=dusk
+    const DAY_LENGTH = 300; // Seconds for full day/night cycle
+    let isNight = false;
+    let moonLight: THREE.DirectionalLight;
+    let sunLight: THREE.DirectionalLight;
     let renderer: THREE.WebGLRenderer;
     let scene: THREE.Scene;
     let camera: THREE.PerspectiveCamera;
@@ -20,14 +27,18 @@
     // Constants
     const BREAK_DISTANCE = 5; // Max mining distance
 
-    // Block colors [air, grass, dirt, stone, wood, leaves]
+    // Block colors [air, grass, dirt, stone, wood, leaves, sand, iron, gold, emerald]
     const blockColors = [
       null,
       { top: '#4f7d20', side: '#6b8c42', bottom: '#8b7355' }, // Grass
       { top: '#8b7355', side: '#8b7355', bottom: '#8b7355' }, // Dirt
       { top: '#808080', side: '#808080', bottom: '#808080' }, // Stone
-      { top: '#8b5a2b', side: '#8b5a2b', bottom: '#8b5a2b' }, // Wood
+      { top: '#8b5a2b', side: '#8b5a2b', bottom: '#8b5a2b' }, // Wood (log)
       { top: '#317f43', side: '#317f43', bottom: '#317f43' }, // Leaves
+      { top: '#d9b382', side: '#d9b382', bottom: '#d9b382' }, // Sand
+      { top: '#656565', side: '#656565', bottom: '#656565' }, // Iron Ore
+      { top: '#FFD700', side: '#FFD700', bottom: '#FFD700' }, // Gold Ore
+      { top: '#00FF00', side: '#00FF00', bottom: '#00FF00' }, // Emerald Ore
     ];
   
     // Debug state
@@ -211,6 +222,25 @@
       world.set(key, block);
     }
   
+    function generateTree(x: number, y: number, z: number) {
+        // Trunk (4 blocks tall)
+        for(let ty = y; ty < y + 4; ty++) {
+            addBlock(x, ty, z, 4); // Wood blocks
+        }
+        
+        // Leaves
+        const leafRadius = 2;
+        for(let lx = x - leafRadius; lx <= x + leafRadius; lx++) {
+            for(let lz = z - leafRadius; lz <= z + leafRadius; lz++) {
+                for(let ly = y + 2; ly < y + 5; ly++) {
+                    if(Math.random() < 0.7 && (lx !== x || lz !== z || ly > y + 3)) {
+                        addBlock(lx, ly, lz, 5); // Leaves
+                    }
+                }
+            }
+        }
+    }
+
     function removeBlock(pos: THREE.Vector3) {
       const key = `${Math.floor(pos.x)}|${Math.floor(pos.y)}|${Math.floor(pos.z)}`;
       const block = world.get(key);
@@ -624,12 +654,15 @@
         camera.position.y += 1.6; // Eye height
 
         // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        scene.add(ambientLight);
-        
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(100, 100, 50);
-        scene.add(directionalLight);
+        sunLight = new THREE.DirectionalLight(0xFFFFFF, 1);
+        sunLight.position.set(100, 500, 100);
+        scene.add(sunLight);
+
+        moonLight = new THREE.DirectionalLight(0x445588, 0);
+        moonLight.position.set(-100, 500, -100);
+        scene.add(moonLight);
+
+        scene.add(new THREE.AmbientLight(0xFFFFFF, 0.2));
 
         // Ground
         const groundGeometry = new THREE.PlaneGeometry(1000, 1000);
@@ -773,6 +806,26 @@
         const time = performance.now();
         const delta = Math.min((time - lastTime) / 1000, 0.1);
         lastTime = time;
+
+        // Update day/night cycle
+        timeOfDay += delta / DAY_LENGTH;
+        if(timeOfDay > 1) timeOfDay -= 1;
+        
+        // Update lighting
+        const sunAngle = timeOfDay * Math.PI * 2;
+        sunLight.position.set(Math.cos(sunAngle) * 500, Math.abs(Math.sin(sunAngle)) * 500, Math.sin(sunAngle) * 500);
+        
+        // Blend between sun and moon
+        isNight = timeOfDay > 0.25 && timeOfDay < 0.75;
+        sunLight.intensity = isNight ? 0 : Math.sin(timeOfDay * Math.PI) * 0.8;
+        moonLight.intensity = isNight ? Math.sin(timeOfDay * Math.PI * 2) * 0.5 : 0;
+        
+        // Adjust sky color
+        scene.background = new THREE.Color().setHSL(
+            0.6,
+            0.1,
+            Math.sin(timeOfDay * Math.PI) * 0.4 + 0.3
+        );
 
         // Only update game if not paused and controls are locked
         if (!isPaused && isControlsLocked) {
@@ -984,6 +1037,34 @@
         margin-bottom: 20px;
     }
 
+    .time-indicator {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        position: relative;
+        transition: background 0.5s;
+    }
+
+    .sun, .moon {
+        position: absolute;
+        width: 20px;
+        height: 20px;
+        top: 10px;
+        right: 10px;
+        border-radius: 50%;
+        transition: opacity 1s;
+    }
+
+    .sun {
+        background: #FFD700;
+        box-shadow: 0 0 20px #FFD700;
+    }
+
+    .moon {
+        background: #FFF;
+        box-shadow: 0 0 20px #445588;
+    }
+
     .controls-list {
         text-align: left;
         margin: 15px 0;
@@ -1005,6 +1086,14 @@
 
 <div id="health-overlay" class="overlay">
     {'❤️'.repeat(player.health)}
+</div>
+
+<div id="time-overlay" class="overlay" style="top: 10px; right: 10px;">
+    <div class="time-indicator" style="background: {isNight ? '#445588' : '#FFD700'}; 
+         transform: rotate({timeOfDay * 360}deg);"></div>
+    <div class="moon" style="opacity: {isNight ? 1 : 0};"></div>
+    <div class="sun" style="opacity: {isNight ? 0 : 1};"></div>
+    {isNight ? "Night" : "Day"}
 </div>
 
 <!-- Pause Menu -->
