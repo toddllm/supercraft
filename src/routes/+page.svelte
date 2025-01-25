@@ -17,6 +17,9 @@
     const RENDER_DISTANCE = 2;
     const CHUNK_SIZE = 8;
   
+    // Constants
+    const BREAK_DISTANCE = 5; // Max mining distance
+
     // Block colors [air, grass, dirt, stone, wood, leaves]
     const blockColors = [
       null,
@@ -701,10 +704,32 @@
             keys[e.code] = false;
         });
 
-        // Handle mouse clicks for attacking
+        // Handle mouse clicks for attacking and mining
         window.addEventListener('click', (e) => {
+            if (isControlsLocked && !isPaused && e.button === 0) { // Left click
+                // Mine blocks
+                raycaster.setFromCamera(new THREE.Vector2(), camera);
+                const intersects = raycaster.intersectObjects(Array.from(world.values()));
+                if (intersects.length > 0 && intersects[0].distance < BREAK_DISTANCE) {
+                    const pos = new THREE.Vector3(
+                        Math.floor(intersects[0].point.x),
+                        Math.floor(intersects[0].point.y),
+                        Math.floor(intersects[0].point.z)
+                    );
+                    removeBlock(pos);
+                } else {
+                    attackEnemies();
+                }
+            }
+        });
+
+        // Add right-click block placement
+        window.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
             if (isControlsLocked && !isPaused) {
-                attackEnemies();
+                if (selectedBlock && player.position.distanceTo(selectedBlock) < BREAK_DISTANCE) {
+                    addBlock(selectedBlock.x, selectedBlock.y, selectedBlock.z, currentBlockType);
+                }
             }
         });
 
@@ -945,6 +970,15 @@
         background: #45a049;
     }
 
+    .block-highlight {
+        position: absolute;
+        pointer-events: none;
+        border: 2px solid rgba(255, 255, 255, 0.8);
+        border-radius: 3px;
+        transform: translate(-50%, -50%);
+        box-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+    }
+
     .pause-menu h2 {
         margin-top: 0;
         margin-bottom: 20px;
@@ -974,6 +1008,17 @@
 </div>
 
 <!-- Pause Menu -->
+{#if selectedBlock}
+    <div class="block-highlight"
+        style="
+            left: {selectedBlock.x * 100}%;
+            top: {selectedBlock.y * 100}%;
+            width: {BLOCK_SIZE}px;
+            height: {BLOCK_SIZE}px;
+        "
+    />
+{/if}
+
 {#if showPauseMenu}
     <div class="pause-menu">
         <h2>Game Paused</h2>
