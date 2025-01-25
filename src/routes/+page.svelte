@@ -26,6 +26,28 @@
   
     // Constants
     const BREAK_DISTANCE = 5; // Max mining distance
+    const INVENTORY_SIZE = 36;
+    const HOTBAR_SIZE = 9;
+    let inventory = Array(INVENTORY_SIZE).fill({ type: 0, count: 0 });
+    let selectedSlot = 0;
+    let breakingProgress = 0;
+    let currentBreakingBlock: THREE.Vector3 | null = null;
+
+    // Update block selection based on inventory
+    $: currentBlockType = inventory[selectedSlot]?.type || 0;
+
+    function addToInventory(type: number, count = 1) {
+        const existing = inventory.findIndex(slot => slot.type === type);
+        if (existing > -1) {
+            inventory[existing].count += count;
+        } else {
+            const firstEmpty = inventory.findIndex(slot => slot.type === 0);
+            if (firstEmpty > -1) {
+                inventory[firstEmpty] = { type, count };
+            }
+        }
+        inventory = inventory; // Trigger Svelte reactivity
+    }
 
     // Block colors [air, grass, dirt, stone, wood, leaves, sand, iron, gold, emerald]
     const blockColors = [
@@ -242,12 +264,22 @@
     }
 
     function removeBlock(pos: THREE.Vector3) {
-      const key = `${Math.floor(pos.x)}|${Math.floor(pos.y)}|${Math.floor(pos.z)}`;
-      const block = world.get(key);
-      if (block) {
-        scene.remove(block);
-        world.delete(key);
-      }
+        const key = `${Math.floor(pos.x)}|${Math.floor(pos.y)}|${Math.floor(pos.z)}`;
+        const block = world.get(key);
+        if (block) {
+            // Get block type from the block's material color
+            const blockMaterial = block.material as THREE.MeshBasicMaterial[];
+            const topColor = blockMaterial[2].color.getHexString();
+            const type = blockColors.findIndex(color => 
+                color && color.top.replace('#', '').toLowerCase() === topColor
+            );
+            
+            if (type > 0) {
+                addToInventory(type, 1);
+            }
+            scene.remove(block);
+            world.delete(key);
+        }
     }
   
     function updateSelectedBlock() {
@@ -807,6 +839,16 @@
         const delta = Math.min((time - lastTime) / 1000, 0.1);
         lastTime = time;
 
+        // Update block breaking
+        if (currentBreakingBlock && isControlsLocked && !isPaused) {
+            breakingProgress += delta * 2; // Adjust speed as needed
+            if (breakingProgress >= 1) {
+                removeBlock(currentBreakingBlock);
+                breakingProgress = 0;
+                currentBreakingBlock = null;
+            }
+        }
+
         // Update day/night cycle
         timeOfDay += delta / DAY_LENGTH;
         if(timeOfDay > 1) timeOfDay -= 1;
@@ -957,6 +999,58 @@
         margin: 0;
         overflow: hidden;
     }
+    
+    .hotbar {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 5px;
+        background: rgba(0,0,0,0.5);
+        padding: 10px;
+        border-radius: 10px;
+        z-index: 100;
+    }
+    
+    .slot {
+        width: 50px;
+        height: 50px;
+        border: 2px solid #444;
+        background: rgba(255,255,255,0.1);
+        cursor: pointer;
+        position: relative;
+    }
+    
+    .selected {
+        border-color: #fff;
+        box-shadow: 0 0 10px rgba(255,255,255,0.5);
+    }
+    
+    .block-preview {
+        width: 100%;
+        height: 100%;
+        position: relative;
+    }
+    
+    .count {
+        position: absolute;
+        bottom: 2px;
+        right: 2px;
+        font-size: 12px;
+        color: white;
+        text-shadow: 1px 1px 2px black;
+    }
+
+    .breaking-overlay {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 20px;
+        height: 20px;
+        pointer-events: none;
+    }
     :global(#svelte) {
         position: relative;
         width: 100vw;
@@ -1079,6 +1173,26 @@
 </style>
   
 <canvas bind:this={canvas}></canvas>
+
+<div class="hotbar">
+    {#each inventory.slice(0, HOTBAR_SIZE) as item, i}
+        <div class="slot {i === selectedSlot ? 'selected' : ''}"
+             on:click={() => selectedSlot = i}>
+            {#if item.type > 0}
+                <div class="block-preview" style="background: {blockColors[item.type]?.top || '#fff'};">
+                    <span class="count">{item.count}</span>
+                </div>
+            {/if}
+        </div>
+    {/each}
+</div>
+
+{#if currentBreakingBlock && breakingProgress > 0}
+    <div class="breaking-overlay"
+         style="background: linear-gradient(to right, 
+                rgba(255,0,0,0.4) {breakingProgress * 100}%, 
+                transparent {breakingProgress * 100}%)">
+    </div>
 
 <div id="debug-overlay" class="overlay">
     Health: {'❤️'.repeat(player.health)}
